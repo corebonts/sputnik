@@ -1,5 +1,6 @@
 package pl.touk.sputnik.connector.gerrit;
 
+import com.google.common.base.Splitter;
 import com.google.common.base.Strings;
 import com.google.gerrit.extensions.api.GerritApi;
 import com.urswolfer.gerrit.client.rest.GerritAuthData;
@@ -16,10 +17,16 @@ import pl.touk.sputnik.connector.http.HttpHelper;
 
 import static org.apache.commons.lang3.Validate.notBlank;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
+
 @Slf4j
 public class GerritFacadeBuilder {
 
-    private HttpHelper httpHelper = new HttpHelper();
+    private final HttpHelper httpHelper = new HttpHelper();
 
     @NotNull
     public GerritFacade build(Configuration configuration) {
@@ -32,9 +39,12 @@ public class GerritFacadeBuilder {
             hostUri += connectorDetails.getPath();
         }
 
+        GerritOptions gerritOptions = GerritOptions.from(configuration);
+
         log.info("Using Gerrit URL: {}", hostUri);
         GerritAuthData.Basic authData = new GerritAuthData.Basic(hostUri,
-                connectorDetails.getUsername(), connectorDetails.getPassword());
+                connectorDetails.getUsername(), connectorDetails.getPassword(),
+                gerritOptions.isUseHttpPassword());
         GerritApi gerritApi = gerritRestApiFactory.create(authData, new HttpClientBuilderExtension() {
             @Override
             public HttpClientBuilder extend(HttpClientBuilder httpClientBuilder, GerritAuthData authData) {
@@ -44,7 +54,7 @@ public class GerritFacadeBuilder {
             }
         });
 
-        return new GerritFacade(gerritApi, gerritPatchset);
+        return new GerritFacade(gerritApi, gerritPatchset, gerritOptions);
     }
 
     @NotNull
@@ -56,6 +66,27 @@ public class GerritFacadeBuilder {
         notBlank(changeId, "You must provide non blank Gerrit change Id");
         notBlank(revisionId, "You must provide non blank Gerrit revision Id");
 
-        return new GerritPatchset(changeId, revisionId, tag);
+        return new GerritPatchset(urlEncodeChangeId(changeId), revisionId, tag);
+    }
+
+    public static String urlEncodeChangeId(String changeId) {
+        if (changeId.indexOf('%') >= 0) {
+            // ChangeID is already encoded (otherwise why it would have a '%' character?)
+            return changeId;
+        }
+        // To keep the changeId readable, we don't encode '~' (it is not needed according to RFC2396)
+        return StreamSupport.stream(Splitter.on('~').split(changeId).spliterator(), false)
+                .map(GerritFacadeBuilder::safeUrlEncode).collect(Collectors.joining("~"));
+    }
+
+    private static String safeUrlEncode(String stringToEncode) {
+        try {
+            return URLEncoder.encode(stringToEncode, StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException e) {
+            // Should not happen
+            @SuppressWarnings("deprecation")
+            String fallbackValue = URLEncoder.encode(stringToEncode);
+            return fallbackValue;
+        }
     }
 }
